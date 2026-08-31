@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+# ==========================================
+# Gestor de Aplicaciones Casata adaptado a Termux
+# Desarrollado por David Baña Szymaniak para Termux
+#
+# Licencia GPL v3 o posterior, puedes revisarla en LICENSE de https://github.com/LyndsCorp/Termux-Casata
+#
+# Copyright (C) 2026 David Baña Szymaniak
+#
+# Casata - El dios del tiempo: el aro verde
+# ==========================================
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+CASATA_ROOT="$PREFIX/local/casata"
+MODULES_DIR="$CASATA_ROOT/modules"
+
+VERSION_FILE="$CASATA_ROOT/VERSION"
+HELP_FILE="$CASATA_ROOT/HELP"
+WELCOME_FILE="$CASATA_ROOT/WELCOME"
+
+# Cargar librería de historial
+if [ -f "$CASATA_ROOT/lib/history-lib.sh" ]; then
+    source "$CASATA_ROOT/lib/history-lib.sh"
+fi
+
+# Función para ejecutar un módulo capturando su salida sin romper la barra de progreso
+run_module() {
+    local module_script="$MODULES_DIR/$1"
+    if [ ! -x "$module_script" ]; then
+        echo -e "${RED}Error: El módulo $1 no existe o no es ejecutable.${NC}"
+        return 1
+    fi
+
+    export GREEN RED NC
+    export CASATA_LOG_FILE="$(get_log_file)"
+
+    log_command_start "$FULL_COMMAND"
+
+    local tmp_output
+    tmp_output="$(mktemp)"
+
+    set +e
+    if command -v script &>/dev/null; then
+        # Construir línea de comando correctamente escapada
+        local cmd_line="bash $(printf '%q' "$module_script")"
+        for arg in "$@"; do
+            cmd_line+=" $(printf '%q' "$arg")"
+        done
+
+        # Ejecutar dentro de 'script' para emular TTY (wget mostrará barra)
+        script -q -c "$cmd_line" "$tmp_output"
+    else
+        # Fallback sin captura TTY (la barra se degradará a puntos)
+        bash "$module_script" "$@" >"$tmp_output" 2>&1
+    fi
+    local code=$?
+    set -e
+
+    # Procesar el archivo temporal para eliminar códigos ANSI, retornos de carro y líneas de progreso repetidas
+    local clean_output
+    if [ -s "$tmp_output" ]; then
+        clean_output="$(sed -r 's/\x1B\[[0-9;]*[mK]//g; s/\r/\n/g' "$tmp_output" \
+            | sed '/^[[:space:]]*$/d' \
+            | awk '
+                {
+                    if ($0 ~ /% /) {
+                        last_progress = $0
+                    } else {
+                        if (last_progress != "") {
+                            print last_progress
+                            last_progress = ""
+                        }
+                        print $0
+                    }
+                }
+                END {
+                    if (last_progress != "") print last_progress
+                }')"
+    else
+        clean_output=""
+    fi
+    rm -f "$tmp_output"
+
+    # Guardar en el historial la salida limpia (si no está vacía)
+    if [ -n "$clean_output" ]; then
+        log_output "$FULL_COMMAND" "$clean_output"
+        if [ $code -ne 0 ]; then
+            log_error_output "$FULL_COMMAND" "$clean_output"
+        fi
+    fi
+
+    log_command_end $code "$FULL_COMMAND"
+    return $code
+}
+
+if [ $# -eq 0 ]; then
+    [ -f "$WELCOME_FILE" ] && cat "$WELCOME_FILE" || echo "Bienvenido a Casata. No se ha entrado el archivo de bienvenida. Te recomiendo reinstalar Casata si no lo puedes utilizar."
+    exit 0
+fi
+
+# Normalización de comandos (alias)
+COMMAND=$1
+shift
+
+case "$COMMAND" in
+    instalar|install) COMMAND="install" ;;
+    eliminar|uninstall|desinstalar|rm|remove) COMMAND="remove" ;;
+    actualizar|update) COMMAND="update" ;;
+    mejorar|upgrade) COMMAND="upgrade" ;;
+    agregar|añadir|add) COMMAND="add" ;;
+    show|mostrar|ver) COMMAND="show" ;;
+    buscar|search) COMMAND="search" ;;
+    listar|list) COMMAND="list" ;;
+    informacion|info) COMMAND="info" ;;
+    historial|history) COMMAND="history" ;;
+    clean|limpiar) COMMAND="clean" ;;
+    download|descargar) COMMAND="download" ;;
+    motd|news|periodico|novedades|mdd|light) COMMAND="motd" ;;
+    --version|-v) COMMAND="--version" ;;
+    --help|--h|-h|ayuda|--ayuda|help|--help|-ayuda) COMMAND="--help" ;;
+esac
+
+# Guardar el comando completo para el log (después de normalización)
+FULL_COMMAND="$COMMAND $*"
+
+case "$COMMAND" in
+    --help)
+        [ -f "$HELP_FILE" ] && cat "$HELP_FILE" || echo "Ayuda no disponible."
+        ;;
+
+    --version)
+        [ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo "Versión desconocida."
+        ;;
+
+    history)
+        # No registrar el comando history para no llenar el log
+        bash "$MODULES_DIR/history.sh" "$@"
+        ;;
+
+    clean)
+        run_module "clean.sh" "$@"
+        ;;
+
+    search)
+        [ -z "$1" ] && { echo -e "${RED}Error: Falta texto de búsqueda.${NC}"; exit 1; }
+        run_module "search.sh" "$@"
+        ;;
+
+    info)
+        [ -z "$1" ] && { echo -e "${RED}Error: Falta el nombre del paquete.${NC}"; exit 1; }
+        run_module "info.sh" "$@"
+        ;;
+
+    install)
+        [ -z "$1" ] && { echo -e "${RED}Error: Faltan argumentos.${NC}"; exit 1; }
+        run_module "install.sh" "$@"
+        ;;
+
+    remove)
+        [ -z "$1" ] && { echo -e "${RED}Error: Faltan argumentos.${NC}"; exit 1; }
+        run_module "remove.sh" "$@"
+        ;;
+
+    update)
+        run_module "update.sh" "$@"
+        ;;
+
+    upgrade)
+        run_module "upgrade.sh" "$@"
+        ;;
+
+    add)
+        run_module "add.sh" "$@"
+        ;;
+
+    show)
+        run_module "show.sh" "$@"
+        ;;
+
+    list)
+        run_module "list.sh" "$@"
+        ;;
+
+    download)
+        run_module "download.sh" "$@"
+        ;;
+
+    motd)
+        run_module "motd.sh" "$@"
+        ;;
+
+    *)
+        echo -e "${RED}Comando no reconocido: $COMMAND${NC}"
+        exit 1
+        ;;
+esac
